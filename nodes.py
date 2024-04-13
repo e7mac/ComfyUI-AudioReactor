@@ -251,7 +251,7 @@ class Shadertoy:
 	      channel_0: Optional[torch.Tensor] = None,
 	      channel_1: Optional[torch.Tensor] = None,
 	      channel_2: Optional[torch.Tensor] = None,
-	      channel_3: Optional[torch.Tensor] = None:
+	      channel_3: Optional[torch.Tensor] = None):
         fragment_source = SHADERTOY_HEADER
         fragment_source += source
         fragment_source += SHADERTOY_FOOTER
