@@ -1,3 +1,4 @@
+from typing import Optional
 import numpy as np
 import torch
 import librosa
@@ -247,8 +248,10 @@ class Shadertoy:
     FUNCTION = "render"
 
     def render(self, width: int, height: int, frame_count: int, fps: int, source: str, 
-               channel_0: torch.Tensor|None=None, channel_1: torch.Tensor|None=None,
-               channel_2: torch.Tensor|None=None, channel_3: torch.Tensor|None=None):
+	      channel_0: Optional[torch.Tensor] = None,
+	      channel_1: Optional[torch.Tensor] = None,
+	      channel_2: Optional[torch.Tensor] = None,
+	      channel_3: Optional[torch.Tensor] = None:
         fragment_source = SHADERTOY_HEADER
         fragment_source += source
         fragment_source += SHADERTOY_FOOTER
@@ -287,7 +290,7 @@ class AudioLoadPath:
     CATEGORY = "Audio Reactor"
     FUNCTION = "load"
 
-    def load(self, path: str, sample_rate: int, offset: float, duration: float|None):
+    def load(self, path: str, sample_rate: int, offset: float, duration: Optional[float] = None):
         if duration == 0.0: duration = None
         audio, _ = librosa.load(path, sr=sample_rate, offset=offset, duration=duration)
         audio = torch.from_numpy(audio)[None,:,None]
