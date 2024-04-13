@@ -1,7 +1,6 @@
 from typing import Optional
 import numpy as np
 import torch
-import librosa
 import nodes as comfy_nodes
 
 import os
@@ -31,7 +30,7 @@ if headless:
         num_configs = egl.EGLint()
         if not egl.eglChooseConfig(egl_display, config_attribs, None, 0, num_configs) or num_configs.value == 0:
             raise RuntimeError("No suitable EGL configuration was found")
-        
+
         egl_config = (egl.EGLConfig * num_configs.value)()
         egl.eglChooseConfig(egl_display, config_attribs, egl_config, 1, num_configs)
         egl_config = egl_config[0]
@@ -53,7 +52,7 @@ if headless:
             raise RuntimeError("Unable to make EGL context current")
 
         return {"egl_display": egl_display, "egl_surface": egl_surface, "egl_context": egl_context}
-    
+
     def render_surface_and_context_deinit(egl_display, egl_surface, egl_context): # type: ignore
         egl.eglMakeCurrent(egl_display, egl.EGL_NO_SURFACE, egl.EGL_NO_SURFACE, egl.EGL_NO_CONTEXT)
         egl.eglDestroySurface(egl_display, egl_surface)
@@ -74,7 +73,7 @@ else:
 
         glfw.make_context_current(window)
         return {}
-    
+
     def render_surface_and_context_deinit(**kwargs):
         glfw.terminate()
 
@@ -175,9 +174,9 @@ SHADERTOY_FOOTER = """
 
 layout(location = 0) out vec4 _fragColor;
 
-void main() 
-{ 
-	mainImage(_fragColor, gl_FragCoord.xy); 
+void main()
+{
+	mainImage(_fragColor, gl_FragCoord.xy);
 }
 """
 
@@ -237,21 +236,24 @@ class Shadertoy:
                               "height": ("INT", {"default": 512, "min": 64, "max": comfy_nodes.MAX_RESOLUTION, "step": 8}),
                               "frame_count": ("INT", {"default": 1, "min": 1, "max": 262144}),
                               "fps": ("INT", {"default": 1, "min": 1, "max": 120}),
-                              "source": ("STRING", {"default": SHADERTOY_DEFAULT, "multiline": True, "dynamicPrompts": False})},
-                "optional": { "channel_0": ("IMAGE",),
-                              "channel_1": ("IMAGE",),
-                              "channel_2": ("IMAGE",),
-                              "channel_3": ("IMAGE",)}}
-    
+                              "shader": ("SHADER",{"forceInput": True})
+                              },
+                "optional": {
+                    "channel_0": ("IMAGE",),
+                    "channel_1": ("IMAGE",),
+                    "channel_2": ("IMAGE",),
+                    "channel_3": ("IMAGE",)}}
+
     RETURN_TYPES = ("IMAGE", )
-    CATEGORY = "Audio Reactor"
+    CATEGORY = "Shader"
     FUNCTION = "render"
 
-    def render(self, width: int, height: int, frame_count: int, fps: int, source: str, 
+    def render(self, width: int, height: int, frame_count: int, fps: int, shader:str = SHADERTOY_DEFAULT,
 	      channel_0: Optional[torch.Tensor] = None,
 	      channel_1: Optional[torch.Tensor] = None,
 	      channel_2: Optional[torch.Tensor] = None,
 	      channel_3: Optional[torch.Tensor] = None):
+        source = shader
         fragment_source = SHADERTOY_HEADER
         fragment_source += source
         fragment_source += SHADERTOY_FOOTER
@@ -273,111 +275,30 @@ class Shadertoy:
             images.append(image)
 
             frame += 1
-        
+
         render_resources_cleanup(ctx)
 
         return (torch.cat(images, dim=0),)
 
-class AudioLoadPath:
+
+class Shader:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "path": ("STRING", {"default": "X://insert/path/here.mp4"}),
-                              "sample_rate": ("INT", {"default": 22050, "min": 6000, "max": 192000, "step": 1}),
-                              "offset": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1e6, "step": 0.001}),
-                              "duration": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1e6, "step": 0.001})}}
-    
-    RETURN_TYPES = ("AUDIO", )
-    CATEGORY = "Audio Reactor"
-    FUNCTION = "load"
+        return {"required": { "source": ("STRING", {"default": SHADERTOY_DEFAULT, "multiline": True, "dynamicPrompts": False})}}
 
-    def load(self, path: str, sample_rate: int, offset: float, duration: Optional[float] = None):
-        if duration == 0.0: duration = None
-        audio, _ = librosa.load(path, sr=sample_rate, offset=offset, duration=duration)
-        audio = torch.from_numpy(audio)[None,:,None]
-        return (audio,)
+    RETURN_TYPES = ("SHADER", )
+    CATEGORY = "Shader"
+    FUNCTION = "shader"
 
-class AudioFrameTransformShadertoy:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { "audio": ("AUDIO",),
-                              "sample_rate": ("INT", {"default": 22050, "min": 6000, "max": 192000, "step": 1}),
-                              "frame_count": ("INT", {"default": 1, "min": 1, "max": 262144}),
-                              "fps": ("INT", {"default": 1, "min": 1, "max": 120})}}
-
-    RETURN_TYPES = ("IMAGE", )
-    CATEGORY = "Audio Reactor"
-    FUNCTION = "transform"
-
-    def transform(self, audio: torch.Tensor, sample_rate: int, frame_count: int, fps: int):
-        timestamps = np.arange(0, frame_count) * (1 / fps)
-
-        samples = audio.cpu().numpy()[0, :, 0]
-        samples = librosa.resample(samples, orig_sr=sample_rate, target_sr=48000)
-
-        # referencing https://gist.github.com/soulthreads/2efe50da4be1fb5f7ab60ff14ca434b8
-        # frames and smoothed fft
-        frame_idxs = librosa.time_to_frames(timestamps, sr=48000, hop_length=512)
-        frames = librosa.util.frame(samples, frame_length=2048, hop_length=512, axis=0)[frame_idxs, :]
-        blackman = librosa.filters.get_window("blackman", 2048, fftbins=True)
-        fft_frames = np.fft.rfft(frames * blackman[None,], axis=1)
-        fft_frames = np.abs(fft_frames) / 2048
-        fft_smoothed = np.zeros_like(fft_frames)
-        k_factor = 0.8 ** (60 / fps)
-        fft_smoothed[0] = (1 - k_factor) * fft_frames[0]
-        for i in range(1, fft_frames.shape[0]): fft_smoothed[i] = k_factor * fft_smoothed[i - 1] + (1 - k_factor) * fft_frames[i]
-        fft_frames = 20 * np.log10(fft_smoothed) # type: ignore
-
-        # conversion
-        frames = np.clip(0.5 * (1 + frames), 0, 1) # type: ignore
-        fft_min = -100
-        fft_max = -30
-        fft_frames = np.divide(fft_frames - fft_min, fft_max - fft_min, out=np.zeros_like(fft_frames), where=fft_max!=fft_min) # type: ignore
-        fft_frames = np.clip(fft_frames, 0, 1) # type: ignore
-
-        frames = torch.from_numpy(frames[:, :512]).unsqueeze(-1).expand(-1, -1, 3)
-        fft_frames = torch.from_numpy(fft_frames[:, :512]).unsqueeze(-1).expand(-1, -1, 3)
-        return (torch.cat([frames.unsqueeze(1), fft_frames.unsqueeze(1)], dim=1),)
-
-class AudioFrameTransformBeats:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { "audio": ("AUDIO",),
-                              "sample_rate": ("INT", {"default": 22050, "min": 6000, "max": 192000, "step": 1}),
-                              "frame_count": ("INT", {"default": 1, "min": 1, "max": 262144}),
-                              "fps": ("INT", {"default": 1, "min": 1, "max": 120})}}
-
-    RETURN_TYPES = ("IMAGE", )
-    CATEGORY = "Audio Reactor"
-    FUNCTION = "transform"
-
-    def transform(self, audio: torch.Tensor, sample_rate: int, frame_count: int, fps: int):
-        timestamps = np.arange(0, frame_count) * (1 / fps)
-
-        samples = audio.cpu().numpy()[0, :, 0]
-        tempo, beats = librosa.beat.beat_track(y=samples, sr=sample_rate, hop_length=512)
-
-        beat_timestamps = librosa.frames_to_time(beats, sr=sample_rate, hop_length=512)
-        matches = librosa.util.match_events(beat_timestamps, timestamps)
-
-        beats = np.isin(np.arange(frame_count), matches).astype(np.float32) # type: ignore
-
-        beats_smoothed = np.zeros_like(beats)
-        k_factor = 0.8 ** (60 / fps)
-        beats_smoothed[0] = beats[0]
-        for i in range(1, beats.shape[0]): beats_smoothed[i] = max(k_factor * beats_smoothed[i - 1], beats[i])
-
-        return (torch.from_numpy(beats_smoothed)[:, None, None, None].expand(-1, -1, -1, 3),)
-
+    def shader(self, source: str):
+        source = source
+        return (source,)
 
 NODE_CLASS_MAPPINGS = {
     "Shadertoy": Shadertoy,
-    "AudioLoadPath": AudioLoadPath,
-    "AudioFrameTransformShadertoy": AudioFrameTransformShadertoy,
-    "AudioFrameTransformBeats": AudioFrameTransformBeats,
+    "Shader": Shader,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Shadertoy": "Shadertoy",
-    "AudioLoadPath": "Load Audio (from Path)",
-    "AudioFrameTransformShadertoy": "Audio Frame Transform (Shadertoy)",
-    "AudioFrameTransformBeats": "Audio Frame Transform (Beats)",
+    "Shader": "Shader",
 }
